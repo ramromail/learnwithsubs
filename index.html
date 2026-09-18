@@ -31,12 +31,15 @@ header {
   padding: calc(env(safe-area-inset-top) + var(--sp2)) calc(env(safe-area-inset-right) + var(--sp4)) var(--sp2) calc(env(safe-area-inset-left) + var(--sp4));
   font-size: 0.85rem; color: var(--fg);
 }
-header select {
+header select, header button {
   font: inherit; font-size: 0.95rem; font-weight: 600; color: var(--fg); background: var(--raised);
   border: 1px solid var(--border); border-radius: var(--radius); min-height: 2.75rem; padding: 0 var(--sp3);
   max-width: 60vw; cursor: pointer;
 }
-header select:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+header select:focus-visible, header button:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+header button { min-width: 2.75rem; padding: 0; }
+header button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); }
+.picks { display: flex; gap: var(--sp2); min-width: 0; }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .counter { font-variant-numeric: tabular-nums; -webkit-text-stroke: 0.2em var(--outline); paint-order: stroke fill; }
 
@@ -64,8 +67,11 @@ header select:focus-visible { outline: 3px solid var(--accent); outline-offset: 
 </head>
 <body>
 <header>
-  <label class="sr-only" for="movie">Movie</label>
-  <select class="hidden" id="movie"></select>
+  <div class="picks">
+    <label class="sr-only" for="movie">Movie</label>
+    <select class="hidden" id="movie"></select>
+    <button class="hidden" id="shuffle" aria-pressed="false" aria-label="Shuffle">🔀</button>
+  </div>
   <span class="counter" id="counter" aria-live="polite"></span>
 </header>
 
@@ -87,10 +93,10 @@ header select:focus-visible { outline: 3px solid var(--accent); outline-offset: 
 // Movies come from movies.json and each deck from <slug>.json, both written by tools/slides.py.
 const $ = id => document.getElementById(id);
 const rows = ["r1", "r2", "r3"].map($);
-const picker = $("movie");
-let movies = [], slides = [], slug = "", at = 0, request = 0;
+const picker = $("movie"), shuffle = $("shuffle");
+// order: the slide indices in viewing order; pos: where we are in it
+let movies = [], slides = [], order = [], slug = "", pos = 0, request = 0;
 
-const clock = s => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, "0")}`;
 const clamp = i => Math.min(slides.length - 1, Math.max(0, i));
 
 async function getJson(url) {
@@ -112,18 +118,32 @@ function show(state, message = "") {
   $("notice").textContent = message;
 }
 
+// film order, or every slide once in random order starting from `first`
+function arrange(first) {
+  order = slides.map((_, i) => i);
+  if (shuffle.getAttribute("aria-pressed") === "true") {
+    for (let i = order.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [order[i], order[j]] = [order[j], order[i]];
+    }
+    order.splice(order.indexOf(first), 1);
+    order.unshift(first);
+  }
+  pos = order.indexOf(first);
+}
+
 function render() {
-  const s = slides[at];
+  const s = slides[order[pos]];
   $("frame").style.backgroundImage = `url("${s.img}")`;
   rows.forEach(row => { if (row.lang) row.textContent = s[row.lang] || ""; });
-  $("counter").textContent = `${clock(s.start)} · ${at + 1} / ${slides.length}`;
-  history.replaceState(null, "", `#${slug}/${at + 1}`);
+  $("counter").textContent = `${pos + 1} / ${slides.length}`;
+  history.replaceState(null, "", `#${slug}/${order[pos] + 1}`);
 }
 
 function go(i) {
   if (!slides.length) return;
   i = clamp(i);
-  if (i !== at) { at = i; render(); }
+  if (i !== pos) { pos = i; render(); }
 }
 
 async function open(name, n) {
@@ -145,7 +165,7 @@ async function open(name, n) {
   slides = Array.isArray(deck.slides) ? deck.slides : [];
   if (!slides.length) return show("empty", `${movie.title} has no dialogue lines.`);
   show("slides");
-  at = clamp(n - 1);
+  arrange(clamp(n - 1));
   render();
 }
 
@@ -161,23 +181,28 @@ async function start() {
   if (!Array.isArray(movies) || !movies.length) return show("empty", "No movies built yet. Run tools/slides.py.");
   for (const m of movies) picker.add(new Option(m.title, m.slug));
   picker.classList.remove("hidden");
+  shuffle.classList.remove("hidden");
   const h = fromHash();
   open(h.name, h.n);
 }
 
 picker.addEventListener("change", () => { picker.blur(); open(picker.value, 1); });
-$("tapprev").addEventListener("click", () => go(at - 1));
-$("tapnext").addEventListener("click", () => go(at + 1));
+shuffle.addEventListener("click", () => {
+  shuffle.setAttribute("aria-pressed", String(shuffle.getAttribute("aria-pressed") !== "true"));
+  if (slides.length) { arrange(order[pos]); render(); }
+});
+$("tapprev").addEventListener("click", () => go(pos - 1));
+$("tapnext").addEventListener("click", () => go(pos + 1));
 window.addEventListener("hashchange", () => {
   if (!movies.length) return;
   const h = fromHash();
-  if (h.name !== slug) open(h.name, h.n); else go(h.n - 1);
+  if (h.name !== slug) open(h.name, h.n); else go(order.indexOf(clamp(h.n - 1)));
 });
 
 document.addEventListener("keydown", e => {
-  if (e.metaKey || e.ctrlKey || e.altKey || e.target === picker) return;
+  if (e.metaKey || e.ctrlKey || e.altKey || e.target === picker || (e.target === shuffle && e.key === " ")) return;
   const step = { ArrowRight: 1, ArrowDown: 1, PageDown: 1, " ": 1, ArrowLeft: -1, ArrowUp: -1, PageUp: -1 }[e.key];
-  if (step) { e.preventDefault(); go(at + step); }
+  if (step) { e.preventDefault(); go(pos + step); }
   else if (e.key === "Home") { e.preventDefault(); go(0); }
   else if (e.key === "End") { e.preventDefault(); go(slides.length - 1); }
 });
@@ -189,7 +214,7 @@ $("stage").addEventListener("touchend", e => {
   if (x0 === null) return;
   const dx = e.changedTouches[0].clientX - x0, dy = e.changedTouches[0].clientY - y0;
   x0 = null;
-  if (Math.abs(dx) > 40 && Math.abs(dx) > Math.abs(dy)) { e.preventDefault(); go(at + (dx < 0 ? 1 : -1)); }
+  if (Math.abs(dx) > 40 && Math.abs(dx) > Math.abs(dy)) { e.preventDefault(); go(pos + (dx < 0 ? 1 : -1)); }
 });
 
 start();
